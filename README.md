@@ -61,6 +61,9 @@ streamlit run app.py
 
 ![Model Evaluation](figures/model_evaluation.png)
 
+
+🔗 **[Live Demo](https://dental-care-prediction.streamlit.app/)**
+
 ## Author
 
 **Mondir Ibrahimi** — Data Scientist
