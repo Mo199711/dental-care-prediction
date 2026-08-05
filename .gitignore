@@ -1,11 +1,6 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-*.pkl
-*.joblib
 .env
 venv/
 .venv/
-data/*.csv
-!data/.gitkeep
-models/
