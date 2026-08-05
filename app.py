@@ -2,6 +2,8 @@
 Streamlit dashboard for dental care utilization prediction.
 """
 
+import sys
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,10 +11,40 @@ import joblib
 from pathlib import Path
 
 MODELS_DIR = Path("models")
+DATA_DIR = Path("data")
+SRC_DIR = Path(__file__).resolve().parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+
+def ensure_model_exists():
+    """Train the model on first run if the artifacts aren't present yet.
+
+    Streamlit Cloud's filesystem is ephemeral and the trained model files
+    are gitignored, so a fresh deploy won't have them. Since the dataset is
+    fully synthetic and reproducible (fixed seed), we can generate it and
+    train the model automatically instead of failing.
+    """
+    required = [
+        MODELS_DIR / "best_model.joblib",
+        MODELS_DIR / "encoders.joblib",
+        MODELS_DIR / "feature_names.joblib",
+    ]
+    if all(p.exists() for p in required):
+        return
+
+    with st.spinner("Premier lancement : génération des données et entraînement du modèle (peut prendre 1-2 min)..."):
+        from data_pipeline import run_pipeline
+        from train import train_all
+
+        if not (DATA_DIR / "dental_claims.csv").exists():
+            run_pipeline()
+        train_all()
 
 
 @st.cache_resource
 def load_model():
+    ensure_model_exists()
     model = joblib.load(MODELS_DIR / "best_model.joblib")
     encoders = joblib.load(MODELS_DIR / "encoders.joblib")
     feature_names = joblib.load(MODELS_DIR / "feature_names.joblib")
