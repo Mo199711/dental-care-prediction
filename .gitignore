@@ -4,3 +4,8 @@ __pycache__/
 .env
 venv/
 .venv/
+.pytest_cache/
+
+# The trained artifacts in models/ and the seeded dataset in data/ are
+# committed on purpose: Streamlit Community Cloud has an ephemeral filesystem
+# and would otherwise retrain on every cold start.
