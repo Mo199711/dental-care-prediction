@@ -1,0 +1,7 @@
+# The executed notebook carries its plot outputs, which makes it the largest
+# file in the repository and pushes GitHub to label the project "Jupyter
+# Notebook". Mark it as documentation so the language bar reflects the source.
+*.ipynb linguist-documentation=true
+
+# Generated, seeded, committed so the deployed dashboard starts cold.
+data/*.csv linguist-generated=true
