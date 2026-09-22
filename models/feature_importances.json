@@ -1,0 +1,23 @@
+{
+  "model": "Logistic Regression",
+  "unit": "|Coefficient| (log-odds per SD)",
+  "values": {
+    "age": 0.362477,
+    "gender": 0.003497,
+    "income_bracket": 0.084554,
+    "region": 0.11011,
+    "has_complementary_insurance": 0.314304,
+    "dental_visits_3y": 0.100924,
+    "claim_amount": 0.277361,
+    "treatment_type": 0.09202,
+    "distance_to_provider_km": 0.221122,
+    "prev_utilization_rate": 0.196619,
+    "days_since_last_visit": 0.352872,
+    "nb_dependents": 0.103833,
+    "age_group": 0.01108,
+    "high_claim": 0.012099,
+    "recent_visitor": 0.00797,
+    "access_score": 0.025281,
+    "engagement_score": 0.136027
+  }
+}

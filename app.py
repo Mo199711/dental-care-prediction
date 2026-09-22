@@ -1,160 +1,167 @@
 """
 Streamlit dashboard for dental care utilization prediction.
+
+The dashboard never re-implements feature engineering. It imports the same
+`engineer_features` used at training time and replays the persisted feature
+configuration, so a beneficiary scored here is transformed exactly as a
+training row was.
 """
 
+import json
 import sys
-
-import streamlit as st
-import pandas as pd
-import numpy as np
-import joblib
 from pathlib import Path
 
-MODELS_DIR = Path("models")
-DATA_DIR = Path("data")
-SRC_DIR = Path(__file__).resolve().parent / "src"
+import joblib
+import pandas as pd
+import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_DIR = PROJECT_ROOT / "src"
+MODELS_DIR = PROJECT_ROOT / "models"
+DATA_PATH = PROJECT_ROOT / "data" / "dental_claims.csv"
+
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from features import (  # noqa: E402
+    FEATURE_CONFIG_PATH,
+    apply_encoders,
+    engineer_features,
+    load_feature_config,
+)
 
-def ensure_model_exists():
-    """Train the model on first run if the artifacts aren't present yet.
+ARTIFACTS = [
+    MODELS_DIR / "best_model.joblib",
+    MODELS_DIR / "encoders.joblib",
+    MODELS_DIR / "feature_names.joblib",
+    FEATURE_CONFIG_PATH,
+]
 
-    Streamlit Cloud's filesystem is ephemeral and the trained model files
-    are gitignored, so a fresh deploy won't have them. Since the dataset is
-    fully synthetic and reproducible (fixed seed), we can generate it and
-    train the model automatically instead of failing.
+
+def ensure_artifacts_exist() -> None:
+    """Rebuild the artifacts if a fresh deploy is missing them.
+
+    The dataset is fully synthetic and seeded, so regenerating it reproduces
+    the committed artifacts rather than silently producing a different model.
     """
-    required = [
-        MODELS_DIR / "best_model.joblib",
-        MODELS_DIR / "encoders.joblib",
-        MODELS_DIR / "feature_names.joblib",
-    ]
-    if all(p.exists() for p in required):
+    if all(path.exists() for path in ARTIFACTS):
         return
 
-    with st.spinner("Premier lancement : génération des données et entraînement du modèle (peut prendre 1-2 min)..."):
+    with st.spinner("First run: generating data and training the model (1-2 min)..."):
         from data_pipeline import run_pipeline
         from train import train_all
 
-        if not (DATA_DIR / "dental_claims.csv").exists():
+        if not DATA_PATH.exists():
             run_pipeline()
         train_all()
 
 
 @st.cache_resource
-def load_model():
-    ensure_model_exists()
-    model = joblib.load(MODELS_DIR / "best_model.joblib")
-    encoders = joblib.load(MODELS_DIR / "encoders.joblib")
-    feature_names = joblib.load(MODELS_DIR / "feature_names.joblib")
-    return model, encoders, feature_names
+def load_artifacts():
+    ensure_artifacts_exist()
+    return (
+        joblib.load(MODELS_DIR / "best_model.joblib"),
+        joblib.load(MODELS_DIR / "encoders.joblib"),
+        joblib.load(MODELS_DIR / "feature_names.joblib"),
+        load_feature_config(),
+    )
 
 
-def main():
-    st.set_page_config(page_title="Dental Care Prediction", page_icon="🦷", layout="wide")
+@st.cache_data
+def load_importances() -> dict | None:
+    path = MODELS_DIR / "feature_importances.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
-    st.title("Dental Care Utilization Prediction")
-    st.markdown("Predict whether a beneficiary will use their approved dental care benefit.")
 
-    try:
-        model, encoders, feature_names = load_model()
-    except FileNotFoundError:
-        st.error("Model not found. Run `python src/train.py` first.")
-        return
-
-    # --- Sidebar: Input form ---
-    st.sidebar.header("Beneficiary Profile")
-
-    age = st.sidebar.slider("Age", 18, 85, 40)
-    gender = st.sidebar.selectbox("Gender", ["M", "F"])
-    income_bracket = st.sidebar.selectbox("Income Bracket", ["low", "medium", "high"])
-    region = st.sidebar.selectbox("Region", ["urban", "suburban", "rural"])
-    has_complementary = st.sidebar.selectbox("Complementary Insurance", [1, 0], format_func=lambda x: "Yes" if x else "No")
-    dental_visits_3y = st.sidebar.slider("Dental Visits (last 3 years)", 0, 15, 3)
-    claim_amount = st.sidebar.slider("Claim Amount (EUR)", 50, 2000, 300)
-    treatment_type = st.sidebar.selectbox("Treatment Type", ["preventive", "restorative", "prosthetic", "orthodontic"])
-    distance = st.sidebar.slider("Distance to Provider (km)", 0.0, 50.0, 5.0)
-    prev_utilization = st.sidebar.slider("Previous Utilization Rate", 0.0, 1.0, 0.6)
-    days_since_visit = st.sidebar.slider("Days Since Last Visit", 0, 2000, 300)
-    nb_dependents = st.sidebar.slider("Number of Dependents", 0, 8, 1)
-
-    # --- Build feature vector ---
-    input_data = pd.DataFrame([{
-        "age": age,
-        "gender": gender,
-        "income_bracket": income_bracket,
-        "region": region,
-        "has_complementary_insurance": has_complementary,
-        "dental_visits_3y": dental_visits_3y,
-        "claim_amount": claim_amount,
-        "treatment_type": treatment_type,
-        "distance_to_provider_km": distance,
-        "prev_utilization_rate": prev_utilization,
-        "days_since_last_visit": days_since_visit,
-        "nb_dependents": nb_dependents,
+def collect_inputs() -> pd.DataFrame:
+    """Read the sidebar form into a single raw row."""
+    st.sidebar.header("Beneficiary profile")
+    return pd.DataFrame([{
+        "age": st.sidebar.slider("Age", 18, 85, 40),
+        "gender": st.sidebar.selectbox("Gender", ["M", "F"]),
+        "income_bracket": st.sidebar.selectbox(
+            "Income bracket", ["low", "medium", "high"]),
+        "region": st.sidebar.selectbox(
+            "Region", ["urban", "suburban", "rural"]),
+        "has_complementary_insurance": st.sidebar.selectbox(
+            "Complementary insurance", [1, 0],
+            format_func=lambda x: "Yes" if x else "No"),
+        "dental_visits_3y": st.sidebar.slider(
+            "Dental visits (last 3 years)", 0, 15, 3),
+        "claim_amount": float(st.sidebar.slider(
+            "Claim amount (EUR)", 50, 2000, 300)),
+        "treatment_type": st.sidebar.selectbox(
+            "Treatment type",
+            ["preventive", "restorative", "prosthetic", "orthodontic"]),
+        "distance_to_provider_km": st.sidebar.slider(
+            "Distance to provider (km)", 0.0, 50.0, 5.0),
+        "prev_utilization_rate": st.sidebar.slider(
+            "Previous utilization rate", 0.0, 1.0, 0.6),
+        "days_since_last_visit": st.sidebar.slider(
+            "Days since last visit", 0, 2000, 300),
+        "nb_dependents": st.sidebar.slider("Number of dependents", 0, 8, 1),
     }])
 
-    # Engineer features (same as training)
-    input_data["age_group"] = pd.cut(
-        input_data["age"], bins=[0, 25, 35, 50, 65, 100],
-        labels=["18-25", "26-35", "36-50", "51-65", "65+"],
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Dental Care Prediction", page_icon="🦷", layout="wide"
     )
-    input_data["high_claim"] = (input_data["claim_amount"] > 800).astype(int)
-    input_data["recent_visitor"] = (input_data["days_since_last_visit"] < 365).astype(int)
-    input_data["access_score"] = (
-        input_data["has_complementary_insurance"] * 2
-        - np.log1p(input_data["distance_to_provider_km"])
-    ).round(3)
-    input_data["engagement_score"] = (
-        input_data["dental_visits_3y"] * 0.4
-        + input_data["prev_utilization_rate"] * 0.6
-    ).round(3)
+    st.title("Dental Care Utilization Prediction")
+    st.markdown(
+        "Predict whether a beneficiary will use their approved dental benefit. "
+        "Trained on a synthetic, seeded dataset of 50,000 claims."
+    )
 
-    # Encode categoricals
-    for col, le in encoders.items():
-        if col in input_data.columns:
-            input_data[col] = le.transform(input_data[col].astype(str))
+    try:
+        model, encoders, feature_names, config = load_artifacts()
+    except FileNotFoundError:
+        st.error("Artifacts not found. Run `python src/train.py` first.")
+        return
 
-    # Ensure same feature order
-    input_data = input_data[feature_names]
+    raw = collect_inputs()
+    features = engineer_features(raw, config)
+    features = apply_encoders(features, encoders)
+    features = features[feature_names]
 
-    # --- Predict ---
     if st.sidebar.button("Predict", type="primary"):
-        proba = model.predict_proba(input_data)[0, 1]
-        prediction = "WILL USE" if proba >= 0.5 else "WILL NOT USE"
+        proba = float(model.predict_proba(features)[0, 1])
 
         col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Prediction", prediction)
-        with col2:
-            st.metric("Probability", f"{proba:.1%}")
-        with col3:
-            risk = "Low" if proba >= 0.7 else ("Medium" if proba >= 0.4 else "High")
-            st.metric("Non-utilization Risk", risk)
-
+        col1.metric("Prediction", "WILL USE" if proba >= 0.5 else "WILL NOT USE")
+        col2.metric("Probability", f"{proba:.1%}")
+        col3.metric(
+            "Non-utilization risk",
+            "Low" if proba >= 0.7 else ("Medium" if proba >= 0.4 else "High"),
+        )
         st.progress(proba)
 
-        # Feature importance context
-        if hasattr(model, "feature_importances_"):
-            st.subheader("Key Factors")
-            importances = pd.Series(
-                model.feature_importances_, index=feature_names
-            ).sort_values(ascending=False).head(8)
-            st.bar_chart(importances)
+        importances = load_importances()
+        if importances:
+            st.subheader(f"What drives the model ({importances['unit']})")
+            st.caption(
+                f"Global importances from the {importances['model']} benchmark, "
+                "not a per-prediction attribution."
+            )
+            st.bar_chart(
+                pd.Series(importances["values"])
+                .sort_values(ascending=False)
+                .head(8)
+            )
 
-    # --- Dataset overview ---
     st.markdown("---")
-    st.subheader("Dataset Overview")
-    try:
-        df = pd.read_csv("data/dental_claims.csv")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Records", f"{len(df):,}")
-        col2.metric("Utilization Rate", f"{df['utilized'].mean():.1%}")
-        col3.metric("Avg Claim Amount", f"{df['claim_amount'].mean():.0f} EUR")
-        col4.metric("Features", str(len(feature_names)))
-    except FileNotFoundError:
-        st.info("Run the data pipeline first to see dataset stats.")
+    st.subheader("Dataset overview")
+    if DATA_PATH.exists():
+        df = pd.read_csv(DATA_PATH)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Records", f"{len(df):,}")
+        c2.metric("Utilization rate", f"{df['utilized'].mean():.1%}")
+        c3.metric("Avg claim", f"{df['claim_amount'].mean():.0f} EUR")
+        c4.metric("high_claim cut-off", f"{config['high_claim_threshold']:.0f} EUR")
+    else:
+        st.info("Run the data pipeline to see dataset statistics.")
 
 
 if __name__ == "__main__":
